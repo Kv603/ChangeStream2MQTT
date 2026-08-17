@@ -20,7 +20,8 @@ ENV MQTT_PW="${MQTT_PW}"
 ENV MQTT_USER="${MQTT_USER}"
 ENV MQTT_HOST="${MQTT_HOST:-127.0.0.1}"
 ENV MQTT_PORT=${MQTT_PORT:-1883} 
-ENV CHANGE_STREAM_DB="${CHANGE_STREAM_DB}"
+#ENV CHANGE_STREAM_DB="${CHANGE_STREAM_DB}"
+#ENV LOGHOST="127.0.0.1"
 
 # setup required extras
 RUN pip3 install --upgrade-strategy only-if-needed -r ./requirements.txt
