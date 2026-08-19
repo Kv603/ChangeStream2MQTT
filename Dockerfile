@@ -11,7 +11,8 @@ WORKDIR /usr/app/src
 
 #to COPY the remote file at working directory in container
 #COPY changes.sh  ./
-COPY requirements.txt changes.py  ./
+COPY requirements.txt changestream2mqtt.py  ./
+COPY collection_handlers ./collection_handlers
 # Now the structure looks like this '/usr/app/src/test.py'
 
 
@@ -28,4 +29,4 @@ RUN pip3 install --upgrade-strategy only-if-needed -r ./requirements.txt
 
 #CMD instruction should be used to run the software
 #contained by your image, along with any arguments.
-CMD [ "python3", "./changes.py"]
+CMD [ "python3", "./changestream2mqtt.py"]
