@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Forward MongoDB change-stream events to MQTT and selected events to Slack."""
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+  
 import asyncio
 import logging
 import logging.handlers
