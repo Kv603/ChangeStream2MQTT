@@ -3,5 +3,3 @@ dnspython
 pymongo[srv]
 pymongo
 aiohttp
-asyncio
-slack_sdk
