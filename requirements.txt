@@ -3,3 +3,4 @@ dnspython
 pymongo[srv]
 pymongo
 aiohttp
+backports.zoneinfo
