@@ -12,6 +12,7 @@ WORKDIR /usr/app/src
 #to COPY the remote file at working directory in container
 #COPY changes.sh  ./
 COPY requirements.txt changestream2mqtt.py  ./
+COPY collection_handlers ./collection_handlers
 # Now the structure looks like this '/usr/app/src/test.py'
 
 
