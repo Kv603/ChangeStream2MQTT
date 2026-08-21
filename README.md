@@ -24,4 +24,5 @@ Set `CACHEDIR` to persist the cache between process restarts. The service
 creates `slack_user_cache.json` under that directory and updates it atomically
 after a successful lookup. If `CACHEDIR` is unset or empty, the cache remains
 in RAM only. Delete the file and restart the service to clear persisted entries
-after a card or Slack-user mapping changes.
+after a card or Slack-user mapping changes. Invalid cache files are renamed
+with a `.bad` extension and ignored so event processing can continue.

@@ -80,6 +80,27 @@ def _cache_file():
     return (Path(cache_dir) / SLACK_USER_CACHE_FILENAME) if cache_dir else None
 
 
+def _quarantine_invalid_cache(path, error):
+    """Move an invalid cache aside without overwriting an earlier bad file."""
+    bad_path = path.with_name(f"{path.name}.bad")
+    sequence = 1
+    while bad_path.exists():
+        bad_path = path.with_name(f"{path.name}.{sequence}.bad")
+        sequence += 1
+    try:
+        path.rename(bad_path)
+    except OSError as rename_error:
+        logger.warning(
+            "Invalid Slack user cache %s (%s); could not rename it to %s: %s",
+            path, error, bad_path, rename_error,
+        )
+    else:
+        logger.warning(
+            "Invalid Slack user cache %s (%s); renamed it to %s",
+            path, error, bad_path,
+        )
+
+
 def _ensure_slack_user_cache_loaded():
     """Load the optional disk cache once for the configured cache directory."""
     global _slack_user_cache_loaded_from
@@ -96,17 +117,27 @@ def _ensure_slack_user_cache_loaded():
             if not path.exists():
                 return
             payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("Slack user cache root must be a JSON object")
             entries = payload.get("entries", [])
             if payload.get("version") != 1 or not isinstance(entries, list):
                 raise ValueError("unsupported Slack user cache format")
+            loaded_entries = {}
             for entry in entries:
                 if not isinstance(entry, dict):
-                    continue
-                key = _cache_key(entry.get("identity", {}))
+                    raise ValueError("Slack user cache entry must be an object")
+                identity = entry.get("identity")
                 slack_user = entry.get("slack_user")
-                if key and isinstance(slack_user, str) and slack_user:
-                    _slack_user_cache[key] = slack_user
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                if not isinstance(identity, dict):
+                    raise ValueError("cache entry identity must be an object")
+                key = _cache_key(identity)
+                if not key or not isinstance(slack_user, str) or not slack_user:
+                    raise ValueError("invalid Slack user cache entry")
+                loaded_entries[key] = slack_user
+            _slack_user_cache.update(loaded_entries)
+        except (ValueError, TypeError) as error:
+            _quarantine_invalid_cache(path, error)
+        except OSError as error:
             logger.warning("Could not load Slack user cache %s: %s", path, error)
 
 

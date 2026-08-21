@@ -117,6 +117,45 @@ class CollectionHandlerTests(unittest.TestCase):
             cache_file.unlink(missing_ok=True)
             cache_dir.rmdir()
 
+    def test_invalid_disk_cache_is_renamed_and_lookup_continues(self):
+        identity = {"holder": "Kevin Kadow", "uid": "1A78FCA0"}
+        cache_dir = Path(__file__).resolve().parent / ".test_slack_user_cache"
+        cache_file = cache_dir / SLACK_USER_CACHE_FILENAME
+        bad_file = cache_dir / f"{SLACK_USER_CACHE_FILENAME}.bad"
+        cache_dir.mkdir(exist_ok=True)
+        try:
+            invalid_payloads = (
+                "[]",
+                "null",
+                "{not valid json",
+                '{"version": 1, "entries": ['
+                '{"identity": {"holder": "Kevin Kadow", '
+                '"uid": "1A78FCA0"}, "slack_user": "<@BAD>"}, null]}',
+            )
+            for invalid_payload in invalid_payloads:
+                with self.subTest(payload=invalid_payload):
+                    _reset_slack_user_cache()
+                    cache_file.unlink(missing_ok=True)
+                    bad_file.unlink(missing_ok=True)
+                    cache_file.write_text(invalid_payload, encoding="utf-8")
+                    with patch.dict(os.environ, {"CACHEDIR": str(cache_dir)}), \
+                            self.assertLogs(
+                                "collection_handlers.common", level="WARNING"
+                            ) as logs:
+                        mention = slack_user_for_card(self.database, identity)
+
+                    self.assertEqual(mention, "<@U123>")
+                    self.assertTrue(bad_file.is_file())
+                    self.assertTrue(cache_file.is_file())
+                    self.assertIn("renamed it", logs.output[0])
+        finally:
+            _reset_slack_user_cache()
+            cache_file.unlink(missing_ok=True)
+            for quarantined_file in cache_dir.glob(
+                    f"{SLACK_USER_CACHE_FILENAME}*.bad"):
+                quarantined_file.unlink()
+            cache_dir.rmdir()
+
     def test_card_lookup_returns_empty_when_card_or_slack_mapping_is_missing(self):
         self.database.cards.find_one.return_value = None
         self.assertEqual(slack_user_for_card(self.database, "CARD"), "")
