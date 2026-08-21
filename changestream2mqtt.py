@@ -76,8 +76,8 @@ async def push_to_slack(text, emoji):
                     logger.warning("Slack webhook returned HTTP %s: %s",
                                    response.status, body)
                     return False
-    except aiohttp.ClientError as error:
-        logger.warning("Slack webhook request failed: %s", error)
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        logger.error("Slack webhook request failed: %s", error)
         return False
     return True
 
@@ -112,10 +112,22 @@ def handle_slack_change(database, collection, operation, document, now_ms=None):
 def process_mongo_update(update_change, database, mqttclient):
     collection = update_change["ns"]["coll"]
     operation = update_change["operationType"]
-    if "fullDocument" in update_change:
+    has_full_document = "fullDocument" in update_change
+    if has_full_document:
         document = update_change["fullDocument"]
     else:
         document = update_change.get("documentKey", update_change)
+
+    # MQTT forwarding is the primary path. Queue the event before performing
+    # any synchronous database lookups or awaiting external notifications.
+    publish_to_mqtt(mqttclient, collection, operation, dumps(document))
+
+    # updateLookup can return null when the document disappears before MongoDB
+    # resolves it. The null event has already reached MQTT; it has no Slack
+    # document to inspect.
+    if document is None:
+        return
+
     handler = COLLECTION_HANDLERS.get(collection)
     if handler:
         handler(database, operation, document, NotificationDependencies(
@@ -124,9 +136,8 @@ def process_mongo_update(update_change, database, mqttclient):
             run_async=run_async,
             now_ms=lambda: time.time() * 1000,
         ))
-    if "fullDocument" in update_change:
+    if has_full_document:
         handle_slack_change(database, collection, operation, document)
-    publish_to_mqtt(mqttclient, collection, operation, dumps(document))
 
 
 def publish_to_mqtt(mqttclient, collection, operation, document):

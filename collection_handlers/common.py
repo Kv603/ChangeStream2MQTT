@@ -1,10 +1,23 @@
 """Formatting and lookup helpers shared by collection handlers."""
 
+import json
+import logging
+import os
+import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 
 EASTERN = ZoneInfo("America/New_York")
+logger = logging.getLogger(__name__)
+
+SLACK_USER_CACHE_FILENAME = "slack_user_cache.json"
+_CACHE_FIELDS = ("holder", "name", "uid")
+_CACHE_NOT_LOADED = object()
+_slack_user_cache = {}
+_slack_user_cache_loaded_from = _CACHE_NOT_LOADED
+_slack_user_cache_lock = threading.Lock()
 
 
 def normalize_epoch_ms(value):
@@ -47,8 +60,103 @@ def whole_duration(milliseconds):
     return "0 seconds"
 
 
-def slack_user_for_card(database, uid):
+def _cache_key(identity):
+    """Build a stable key from the identity fields present in a document."""
+    source = identity if isinstance(identity, dict) else {"uid": identity}
+    key = []
+    for field in _CACHE_FIELDS:
+        if field not in source or source[field] is None:
+            continue
+        value = " ".join(str(source[field]).split())
+        if not value:
+            continue
+        value = value.upper() if field == "uid" else value.casefold()
+        key.append((field, value))
+    return tuple(key)
+
+
+def _cache_file():
+    cache_dir = os.environ.get("CACHEDIR")
+    return (Path(cache_dir) / SLACK_USER_CACHE_FILENAME) if cache_dir else None
+
+
+def _ensure_slack_user_cache_loaded():
+    """Load the optional disk cache once for the configured cache directory."""
+    global _slack_user_cache_loaded_from
+
+    path = _cache_file()
+    with _slack_user_cache_lock:
+        if _slack_user_cache_loaded_from == path:
+            return
+        _slack_user_cache_loaded_from = path
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                return
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            entries = payload.get("entries", [])
+            if payload.get("version") != 1 or not isinstance(entries, list):
+                raise ValueError("unsupported Slack user cache format")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                key = _cache_key(entry.get("identity", {}))
+                slack_user = entry.get("slack_user")
+                if key and isinstance(slack_user, str) and slack_user:
+                    _slack_user_cache[key] = slack_user
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+            logger.warning("Could not load Slack user cache %s: %s", path, error)
+
+
+def _persist_slack_user_cache():
+    """Atomically persist a snapshot when CACHEDIR is configured."""
+    path = _cache_file()
+    if path is None:
+        return
+
+    with _slack_user_cache_lock:
+        entries = [
+            {"identity": dict(key), "slack_user": slack_user}
+            for key, slack_user in sorted(_slack_user_cache.items())
+        ]
+    temporary_path = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with temporary_path.open(mode="w", encoding="utf-8") as temporary_file:
+            json.dump({"version": 1, "entries": entries}, temporary_file,
+                      indent=2, sort_keys=True)
+            temporary_file.write("\n")
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except OSError as error:
+        logger.warning("Could not persist Slack user cache %s: %s", path, error)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _reset_slack_user_cache():
+    """Reset process-local cache state; intended for isolated tests."""
+    global _slack_user_cache_loaded_from
+
+    with _slack_user_cache_lock:
+        _slack_user_cache.clear()
+        _slack_user_cache_loaded_from = _CACHE_NOT_LOADED
+
+
+def slack_user_for_card(database, identity):
     """Return the Slack mention associated with a check-in card UID.
+
+    Successful lookups are cached by the combination of ``holder``, ``name``,
+    and ``uid`` present in *identity*. A bare UID remains supported for callers
+    that do not have the complete event document.
 
     The UID already comes from the change-stream document, so querying the
     event collection again adds a race-prone and potentially many-row first
@@ -57,6 +165,15 @@ def slack_user_for_card(database, uid):
     hexadecimal UIDs, and older Slack mappings may store an ObjectId as its
     string representation, so accept those equivalent representations.
     """
+    _ensure_slack_user_cache_loaded()
+    key = _cache_key(identity)
+    if key:
+        with _slack_user_cache_lock:
+            cached_user = _slack_user_cache.get(key)
+        if cached_user is not None:
+            return cached_user
+
+    uid = identity.get("uid") if isinstance(identity, dict) else identity
     if uid is None:
         return ""
 
@@ -76,5 +193,10 @@ def slack_user_for_card(database, uid):
     )
     if not slack_user or not slack_user.get("slack_id"):
         return ""
-    return f"<@{slack_user['slack_id']}>"
+    mention = f"<@{slack_user['slack_id']}>"
+    if key:
+        with _slack_user_cache_lock:
+            _slack_user_cache[key] = mention
+        _persist_slack_user_cache()
+    return mention
 
