@@ -52,8 +52,9 @@ def slack_user_for_card(database, uid):
 
     The UID already comes from the change-stream document, so querying the
     event collection again adds a race-prone and potentially many-row first
-    stage. Look up the member directly instead. Card readers may vary the case
-    of hexadecimal UIDs, and older Slack mappings may store an ObjectId as its
+    stage. The card-to-member relationship lives in ``cards``, not in the
+    member's legacy ``cardID`` field. Card readers may vary the case of
+    hexadecimal UIDs, and older Slack mappings may store an ObjectId as its
     string representation, so accept those equivalent representations.
     """
     if uid is None:
@@ -62,13 +63,13 @@ def slack_user_for_card(database, uid):
     card_ids = [uid]
     if isinstance(uid, str):
         card_ids = list(dict.fromkeys((uid, uid.upper(), uid.lower())))
-    member = database.members.find_one(
-        {"cardID": {"$in": card_ids}}, {"_id": 1}
+    card = database.cards.find_one(
+        {"uid": {"$in": card_ids}}, {"member_id": 1}
     )
-    if not member or member.get("_id") is None:
+    if not card or card.get("member_id") is None:
         return ""
 
-    member_id = member["_id"]
+    member_id = card["member_id"]
     member_ids = list(dict.fromkeys((member_id, str(member_id))))
     slack_user = database.slack_users.find_one(
         {"member_id": {"$in": member_ids}}, {"slack_id": 1}

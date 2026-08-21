@@ -22,7 +22,7 @@ class CollectionHandlerTests(unittest.TestCase):
     def setUp(self):
         self.database = MagicMock()
         self.member_id = ObjectId("507f1f77bcf86cd799439011")
-        self.database.members.find_one.return_value = {"_id": self.member_id}
+        self.database.cards.find_one.return_value = {"member_id": self.member_id}
         self.database.slack_users.find_one.return_value = {"slack_id": "U123"}
 
     def test_rejection_message_includes_mention_and_expiry(self):
@@ -60,21 +60,22 @@ class CollectionHandlerTests(unittest.TestCase):
         mention = slack_user_for_card(self.database, "1A78FCA0")
 
         self.assertEqual(mention, "<@U123>")
-        self.database.members.find_one.assert_called_once_with(
-            {"cardID": {"$in": ["1A78FCA0", "1a78fca0"]}}, {"_id": 1}
+        self.database.cards.find_one.assert_called_once_with(
+            {"uid": {"$in": ["1A78FCA0", "1a78fca0"]}}, {"member_id": 1}
         )
         self.database.slack_users.find_one.assert_called_once_with(
             {"member_id": {"$in": [self.member_id, str(self.member_id)]}},
             {"slack_id": 1},
         )
         self.database.__getitem__.assert_not_called()
+        self.database.members.find_one.assert_not_called()
 
-    def test_card_lookup_returns_empty_when_member_or_slack_mapping_is_missing(self):
-        self.database.members.find_one.return_value = None
+    def test_card_lookup_returns_empty_when_card_or_slack_mapping_is_missing(self):
+        self.database.cards.find_one.return_value = None
         self.assertEqual(slack_user_for_card(self.database, "CARD"), "")
         self.database.slack_users.find_one.assert_not_called()
 
-        self.database.members.find_one.return_value = {"_id": self.member_id}
+        self.database.cards.find_one.return_value = {"member_id": self.member_id}
         self.database.slack_users.find_one.return_value = None
         self.assertEqual(slack_user_for_card(self.database, "CARD"), "")
 
