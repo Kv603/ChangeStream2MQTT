@@ -47,20 +47,33 @@ def whole_duration(milliseconds):
     return "0 seconds"
 
 
-def slack_user_for_card(database, collection, uid):
-    """Return a Slack mention associated with a card ID."""
-    pipeline = [
-        {"$match": {"uid": uid}},
-        {"$lookup": {"from": "members", "localField": "uid",
-                     "foreignField": "cardID", "as": "member"}},
-        {"$unwind": {"path": "$member", "preserveNullAndEmptyArrays": False}},
-        {"$lookup": {"from": "slack_users", "localField": "member._id",
-                     "foreignField": "member_id", "as": "slack_user"}},
-        {"$unwind": {"path": "$slack_user",
-                     "preserveNullAndEmptyArrays": False}},
-        {"$addFields": {"slack_id": "$slack_user.slack_id"}},
-        {"$project": {"slack_user": 0}},
-    ]
-    result = next(iter(database[collection].aggregate(pipeline)), None)
-    return f"<@{result['slack_id']}>" if result and result.get("slack_id") else ""
+def slack_user_for_card(database, uid):
+    """Return the Slack mention associated with a check-in card UID.
+
+    The UID already comes from the change-stream document, so querying the
+    event collection again adds a race-prone and potentially many-row first
+    stage. Look up the member directly instead. Card readers may vary the case
+    of hexadecimal UIDs, and older Slack mappings may store an ObjectId as its
+    string representation, so accept those equivalent representations.
+    """
+    if uid is None:
+        return ""
+
+    card_ids = [uid]
+    if isinstance(uid, str):
+        card_ids = list(dict.fromkeys((uid, uid.upper(), uid.lower())))
+    member = database.members.find_one(
+        {"cardID": {"$in": card_ids}}, {"_id": 1}
+    )
+    if not member or member.get("_id") is None:
+        return ""
+
+    member_id = member["_id"]
+    member_ids = list(dict.fromkeys((member_id, str(member_id))))
+    slack_user = database.slack_users.find_one(
+        {"member_id": {"$in": member_ids}}, {"slack_id": 1}
+    )
+    if not slack_user or not slack_user.get("slack_id"):
+        return ""
+    return f"<@{slack_user['slack_id']}>"
 

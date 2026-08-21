@@ -12,7 +12,7 @@ def handle_change(database, operation, document, notifications):
 
     slackuser = ""
     if document.get("holder") is not None:
-        slackuser = slack_user_for_card(database, "checkins", document.get("uid"))
+        slackuser = slack_user_for_card(database, document.get("uid"))
     details = " ".join(filter(None, [str(document.get("validity", "")),
                                       str(document.get("holder", "")), slackuser]))
     when = convert_to_eastern(document.get("timeOf", document.get("time", "")))
