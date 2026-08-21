@@ -65,6 +65,25 @@ class CollectionHandlerTests(unittest.TestCase):
         notify_get.assert_called_once_with()
         self.assertEqual(run.call_count, 2)
 
+    def test_abbreviated_checkin_sends_available_name_and_time(self):
+        document = {
+            "_id": ObjectId("6a88b8f70f679761b73a6514"),
+            "name": "David Ward",
+            "time": 1_787_345_143_902,
+        }
+        deps, push, notify_get, run = dependencies()
+
+        checkins.handle_change(self.database, "insert", document, deps)
+
+        push.assert_called_once()
+        text = push.call_args.args[0]
+        self.assertIn("Access granted to David Ward", text)
+        self.assertIn("2026-08-21", text)
+        self.database.cards.find_one.assert_not_called()
+        self.database.slack_users.find_one.assert_not_called()
+        notify_get.assert_called_once_with()
+        self.assertEqual(run.call_count, 2)
+
     def test_repeated_identity_uses_ram_cache_without_requerying_database(self):
         identity = {
             "holder": "Kevin Kadow", "name": "Kevin", "uid": "1a78fca0",

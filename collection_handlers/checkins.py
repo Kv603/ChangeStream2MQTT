@@ -11,11 +11,16 @@ def handle_change(database, operation, document, notifications):
         return
 
     slackuser = slack_user_for_card(database, document)
+    person = document.get("holder") or document.get("name", "")
     details = " ".join(filter(None, [str(document.get("validity", "")),
-                                      str(document.get("holder", "")), slackuser]))
+                                      str(person), slackuser]))
     when = convert_to_eastern(document.get("timeOf", document.get("time", "")))
-    text = (f"Reader {document.get('where', '')} granted access to "
-            f"{details} at {when}")
+    reader = document.get("where")
+    text = f"Reader {reader} granted access" if reader else "Access granted"
+    if details:
+        text += f" to {details}"
+    if when:
+        text += f" at {when}"
     emoji = os.environ.get("SLACK_BOT_EMOJI_CHECKINS", ":robot_face:")
     notifications.run_async(notifications.push_to_slack(text, emoji))
     notifications.run_async(notifications.notify_get())
