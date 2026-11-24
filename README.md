@@ -48,6 +48,61 @@ to Slack through an incoming webhook. If either `SLACK_WEBHOOK_URL` or
 `SLACK_CHANNEL` is missing, the service logs a warning and skips the Slack
 notification.
 
+## MQTT service status
+
+Grant the service's MQTT account permission to publish to these topics,
+including its Last Will on `ChangeStream2MQTT/status/mqtt`. The broker keeps
+one retained QoS 1 message per topic. Subscribers can use `hostname` to
+identify the publishing host or container.
+
+| Topic | Events |
+| --- | --- |
+| `ChangeStream2MQTT/status` | `startup` on the first accepted MQTT connection. |
+| `ChangeStream2MQTT/status/mqtt` | `connection_established`, `connection_resumed`, `connection_lost` via Last Will, `shutdown` on graceful exit, and `hourly`. |
+| `ChangeStream2MQTT/status/mongodb` | `connection_established`, `connection_lost`, `connection_resumed`, and `hourly`. |
+
+Every JSON message has a UTC `timestamp`, `hostname`, `event`, and `status`.
+Connection status values include `connecting`, `connected`, and
+`disconnected`. Startup uses `started` and adds `uname`, `executable`,
+`entrypoint`, and `environment`. The `uname` field contains the output of
+`uname -a`, with Python platform information as a fallback. The executable
+and entry point each include a `name` and absolute `path`. The environment
+object contains `MQTT_HOST`, `MQTT_USER`, and `LOGHOST` when configured.
+
+The MQTT Last Will contains `message` set to `connection lost` and
+`timestamp_kind` set to `will_configured`. Its timestamp records when the
+service prepared the Will. The broker publishes that payload after an
+unexpected disconnect. MongoDB loss messages include a short `reason`.
+If PyMongo exhausts its recovery attempts, the service reports the stream
+loss and exits with the original error.
+
+### Hourly reports
+
+The service reports at `:00` wall-clock time, starting at the next top of
+the hour, even when MongoDB is idle. Each report includes UTC
+`window_start` and `window_end` for the preceding clock hour. A change that
+occurs exactly at `window_end` belongs to the next hour. The first report
+covers activity since startup within that clock hour. Missed hourly reports
+are skipped during a broker outage. The latest MongoDB connection state is
+sent when MQTT reconnects.
+
+Both reports include `uptime_seconds`. `mqtt_uptime_seconds` and
+`mongodb_uptime_seconds` measure the current uninterrupted connection and
+are zero while disconnected. For each counter below, `_total` covers the
+current process lifetime and `_last_hour` covers the reported clock hour.
+
+| Topic suffix | Counter | Meaning |
+| --- | --- | --- |
+| `/mqtt` | `change_messages_published` | Change publishes acknowledged by the broker through QoS 2, counted in the hour of acknowledgment. |
+| `/mqtt` | `change_publish_failures` | Publish errors, including a disconnected submission that Paho may deliver later. |
+| `/mqtt` | `change_messages_lost` | Definite publish rejections, such as a full client queue or invalid publish arguments. |
+| `/mongodb` | `changes_received` | Events returned by the change stream, counted before collection filtering. |
+
+MQTT reports also include `change_messages_pending`, the current count
+awaiting a broker acknowledgment. A pending change can increase the
+published counter after a reconnect. Intentional collection skips and status
+publishes are excluded from the MQTT change counters.
+
 ## Slack user cache
 
 Successful card-to-Slack-user lookups are cached in RAM. Cache keys use the

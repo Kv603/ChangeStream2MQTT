@@ -2,7 +2,9 @@ import asyncio
 import os
 import unittest
 from datetime import datetime, timezone
+from itertools import count
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import changestream2mqtt as app
@@ -350,6 +352,19 @@ class DispatcherTests(unittest.TestCase):
             self.change("ledger_entries"),
             normal_change,
         ]
+        packet_ids = count(1)
+        success = SimpleNamespace(is_failure=False)
+        self.mqtt.is_connected.return_value = True
+        self.mqtt.loop_start.side_effect = lambda: self.mqtt.on_connect(
+            self.mqtt, None, None, success, None,
+        )
+
+        def publish(_topic, _payload, _qos, *, retain):
+            info = app.mqtt.MQTTMessageInfo(next(packet_ids))
+            self.mqtt.on_publish(self.mqtt, None, info.mid, success, None)
+            return info
+
+        self.mqtt.publish.side_effect = publish
         settings = {"MQTT_HOST": "broker", "CHANGE_STREAM_DB": "mongodb://database"}
         with (
             patch.dict(os.environ, settings, clear=True),
@@ -358,15 +373,50 @@ class DispatcherTests(unittest.TestCase):
             patch.object(app.pymongo, "MongoClient") as mongo_client,
             patch.object(app, "handle_slack_change") as slack,
         ):
-            mongo_client.return_value.makerauth = self.database
+            client = mongo_client.return_value
+            client.__enter__.return_value = client
+            client.makerauth = self.database
             app.main()
 
         watch.assert_called_once_with([], full_document="updateLookup")
-        self.mqtt.publish.assert_called_once()
-        topic, payload, _qos = self.mqtt.publish.call_args.args
+        listener, = mongo_client.call_args.kwargs["event_listeners"]
+        self.assertIsInstance(listener, app.MongoStreamListener)
+        change, = [call for call in self.mqtt.publish.call_args_list
+                   if not call.kwargs["retain"]]
+        topic, payload, qos = change.args
         self.assertEqual(topic, "widgets/update")
+        self.assertEqual(qos, 2)
         self.assertIn('"document": null', payload)
+        self.assertTrue(any(call.args[0] == "ChangeStream2MQTT/status/mqtt"
+                            and '"event": "shutdown"' in call.args[1]
+                            for call in self.mqtt.publish.call_args_list))
         slack.assert_not_called()
+
+    def test_main_reports_stream_loss_and_exits_after_failed_pymongo_resume(self):
+        failure = app.pymongo.errors.AutoReconnect("resume attempt failed")
+        watch = self.database.watch
+        watch.return_value.__enter__.return_value.__iter__.side_effect = failure
+        settings = {"MQTT_HOST": "broker", "CHANGE_STREAM_DB": "mongodb://database"}
+        with (
+            patch.dict(os.environ, settings, clear=True),
+            patch.object(app, "configure_logging"),
+            patch.object(app.mqtt, "Client", return_value=self.mqtt),
+            patch.object(app.pymongo, "MongoClient") as mongo_client,
+            patch.object(app, "StatusReporter") as reporter,
+        ):
+            client = mongo_client.return_value
+            client.__enter__.return_value = client
+            client.makerauth = self.database
+            with self.assertRaises(app.pymongo.errors.AutoReconnect) as raised:
+                app.main()
+
+        self.assertIs(raised.exception, failure)
+        watch.assert_called_once_with([], full_document="updateLookup")
+        reporter.return_value.mongodb_lost.assert_called_once_with("watch_error")
+        reporter.return_value.close.assert_called_once()
+        client.__exit__.assert_called_once()
+        self.mqtt.disconnect.assert_called_once()
+        self.mqtt.loop_stop.assert_called_once()
 
 
 if __name__ == "__main__":

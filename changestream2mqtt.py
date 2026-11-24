@@ -7,6 +7,7 @@ import logging.handlers
 import os
 import sys
 import time
+from contextlib import ExitStack, closing
 
 import aiohttp
 import paho.mqtt.client as mqtt
@@ -17,6 +18,7 @@ from collection_handlers import NotificationDependencies
 from collection_handlers import checkins, rejections
 from collection_handlers.common import (convert_to_eastern, normalize_epoch_ms,
                                         whole_duration)
+from service_status import MongoStreamListener, StatusReporter
 
 
 logger = logging.getLogger(__name__)
@@ -158,25 +160,48 @@ def publish_to_mqtt(mqttclient, collection, operation, document):
         logger.warning("%s to %s %s failed", operation, topic, document)
 
 
-def main():
-    configure_logging()
-    mqttclient = mqtt.Client()
-    if os.environ.get("MQTT_USER"):
-        mqttclient.username_pw_set(os.environ["MQTT_USER"], os.environ.get("MQTT_PW"))
-    mqttclient.connect(os.environ["MQTT_HOST"], int(os.environ.get("MQTT_PORT", 1883)), 60)
-    mqttclient.loop_start()
-
-    client = pymongo.MongoClient(os.environ["CHANGE_STREAM_DB"])
-    client.admin.command("ping")
-    database = client.makerauth
+def read_changes(database, status):
     try:
         # A $match stage with updateLookup can cause resume-token errors.
         with database.watch([], full_document="updateLookup") as change_stream:
-            for change in change_stream:
-                process_mongo_update(change, database, mqttclient)
-    finally:
-        client.close()
-        mqttclient.disconnect()
+            yield from change_stream
+    except pymongo.errors.PyMongoError:
+        status.mongodb_lost("watch_error")
+        raise
+    status.mongodb_lost("stream_closed")
+
+
+def main():
+    configure_logging()
+    mqttclient = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    status = StatusReporter(mqttclient, os.environ)
+    if os.environ.get("MQTT_USER"):
+        mqttclient.username_pw_set(os.environ["MQTT_USER"], os.environ.get("MQTT_PW"))
+
+    with ExitStack() as cleanup:
+        cleanup.callback(mqttclient.loop_stop)
+        cleanup.callback(mqttclient.disconnect)
+        mqttclient.connect(os.environ["MQTT_HOST"], int(os.environ.get("MQTT_PORT", 1883)), 60)
+        status.start()
+        cleanup.callback(status.close)
+        mqttclient.loop_start()
+
+        listener = MongoStreamListener(status, "makerauth")
+        try:
+            client = cleanup.enter_context(pymongo.MongoClient(
+                os.environ["CHANGE_STREAM_DB"], event_listeners=[listener],
+            ))
+            client.admin.command("ping")
+        except pymongo.errors.PyMongoError:
+            status.mongodb_lost("startup_failed")
+            raise
+
+        database = client.makerauth
+        with closing(read_changes(database, status)) as changes:
+            for change in changes:
+                status.record_change_received()
+                if (change.get("ns") or {}).get("coll"):
+                    process_mongo_update(change, database, status)
 
 
 if __name__ == "__main__":
