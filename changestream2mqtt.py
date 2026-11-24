@@ -170,8 +170,8 @@ def main():
     client.admin.command("ping")
     database = client.makerauth
     try:
-        pipeline = [{"$match": {"ns.coll": {"$not": {"$regex": "^ledger_"}}}}]
-        with database.watch(pipeline, full_document="updateLookup") as change_stream:
+        # A $match stage with updateLookup can cause resume-token errors.
+        with database.watch([], full_document="updateLookup") as change_stream:
             for change in change_stream:
                 process_mongo_update(change, database, mqttclient)
     finally:

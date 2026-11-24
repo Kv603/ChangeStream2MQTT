@@ -1,22 +1,52 @@
 # ChangeStream2MQTT
 Ingests MongoDB Atlas Changestream and replicates changes to MQTT
 
-Collections whose names start with `ledger_` are excluded from the change
-stream, forwarding, and payload logging. The Ledger publishes its own minimal
-advancement events. This exclusion also applies to direct publisher calls;
-private consent, recognition messages, prompts, and game records must never be
-republished by this database-wide bridge.
+The bridge skips events from collections whose names start with `ledger_`
+before forwarding, logging payloads, or sending Slack notifications. Direct
+calls to the MQTT publisher also skip these collections. The Ledger publishes
+its own minimal advancement events. The prefix check keeps private consent
+records, recognition messages, prompts, and game records out of the bridge's
+output.
+
+## Docker configuration
+
+Create `changestream2mqtt.env` with the connection settings for your
+deployment. Replace these example endpoints with ones reachable from the
+container.
+
+```dotenv
+CHANGE_STREAM_DB=mongodb://mongo.example.com:27017/?replicaSet=rs0
+MQTT_HOST=mqtt.example.com
+```
+
+```sh
+docker build -t changestream2mqtt .
+docker run --env-file changestream2mqtt.env changestream2mqtt
+```
+
+### Environment variables
+
+| Variable | Requirement | Default | Purpose |
+| --- | --- | --- | --- |
+| `CHANGE_STREAM_DB` | Required | Unset | MongoDB connection URI. The service watches the `makerauth` database. |
+| `MQTT_HOST` | Optional | `127.0.0.1` | MQTT broker hostname or IP. Set this if the broker is unavailable at the container's loopback address. |
+| `MQTT_PORT` | Optional | `1883` | MQTT broker port. |
+| `MQTT_USER` | Required if the broker requires a username | Empty | MQTT username. An empty value disables MQTT authentication. |
+| `MQTT_PW` | Required if the broker requires a password | Empty | MQTT password. The application uses it only with a non-empty `MQTT_USER`. |
+| `LOGHOST` | Optional | Unset | Syslog destination for warnings and errors over UDP port `514`. When unset, the service logs to stderr at `INFO` level. |
+| `REMOTE_GET_URL` | Optional | Unset | Legacy notification URL called with `GET` for `checkins` inserts. |
+| `SLACK_WEBHOOK_URL` | Required for Slack notifications | Unset | Slack incoming webhook URL. |
+| `SLACK_CHANNEL` | Required for Slack notifications | Unset | Channel value sent in the Slack webhook payload. |
+| `SLACK_BOT_USERNAME` | Optional | `DoorBoto` | Username sent in Slack webhook payloads. |
+| `SLACK_BOT_EMOJI_CHECKINS` | Optional | `:robot_face:` | Slack icon emoji for check-in notifications. |
+| `SLACK_BOT_EMOJI_REJECTIONS` | Optional | `:octagonal_sign:` | Slack icon emoji for rejection notifications. |
+| `SLACK_BOT_EMOJI_ACTIVEMEMBER` | Optional | `:+1:` | Slack icon emoji for active member notifications. |
+| `CACHEDIR` | Optional | Unset | Writable container directory for the Slack user cache. |
 
 Selected `checkins`, `rejections`, and active `members` changes can also be sent
-to Slack through an incoming webhook. Set both required variables:
-
-* `SLACK_WEBHOOK_URL` - the incoming webhook URL
-* `SLACK_CHANNEL` - the destination channel
-
-Slack notifications are skipped with a warning if either setting is absent.
-The optional `SLACK_BOT_USERNAME` defaults to `DoorBoto`. Event icons can be
-customized with `SLACK_BOT_EMOJI_CHECKINS`, `SLACK_BOT_EMOJI_REJECTIONS`, and
-`SLACK_BOT_EMOJI_ACTIVEMEMBER`.
+to Slack through an incoming webhook. If either `SLACK_WEBHOOK_URL` or
+`SLACK_CHANNEL` is missing, the service logs a warning and skips the Slack
+notification.
 
 ## Slack user cache
 
@@ -32,3 +62,6 @@ after a successful lookup. If `CACHEDIR` is unset or empty, the cache remains
 in RAM only. Delete the file and restart the service to clear persisted entries
 after a card or Slack-user mapping changes. Invalid cache files are renamed
 with a `.bad` extension and ignored so event processing can continue.
+
+Mount a Docker volume at the `CACHEDIR` path to keep the cache when the
+container is replaced.

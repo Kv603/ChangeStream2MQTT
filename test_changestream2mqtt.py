@@ -342,6 +342,32 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(handler.call_args.args[2], {"_id": "gone"})
         self.mqtt.publish.assert_called_once()
 
+    def test_main_skips_ledger_events_with_unfiltered_update_lookup(self):
+        normal_change = self.change("widgets", operation="update")
+        normal_change["fullDocument"] = None
+        watch = self.database.watch
+        watch.return_value.__enter__.return_value = [
+            self.change("ledger_entries"),
+            normal_change,
+        ]
+        settings = {"MQTT_HOST": "broker", "CHANGE_STREAM_DB": "mongodb://database"}
+        with (
+            patch.dict(os.environ, settings, clear=True),
+            patch.object(app, "configure_logging"),
+            patch.object(app.mqtt, "Client", return_value=self.mqtt),
+            patch.object(app.pymongo, "MongoClient") as mongo_client,
+            patch.object(app, "handle_slack_change") as slack,
+        ):
+            mongo_client.return_value.makerauth = self.database
+            app.main()
+
+        watch.assert_called_once_with([], full_document="updateLookup")
+        self.mqtt.publish.assert_called_once()
+        topic, payload, _qos = self.mqtt.publish.call_args.args
+        self.assertEqual(topic, "widgets/update")
+        self.assertIn('"document": null', payload)
+        slack.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
