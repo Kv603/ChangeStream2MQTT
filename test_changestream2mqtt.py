@@ -324,6 +324,14 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(handler.call_args.args[2], {"_id": "gone"})
         self.mqtt.publish.assert_called_once()
 
+    def test_ledger_collection_is_skipped(self):
+        with patch.object(app, "handle_slack_change") as slack:
+            app.process_mongo_update(self.change("ledger_entries"),
+                                     self.database, self.mqtt)
+
+        self.mqtt.publish.assert_not_called()
+        slack.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

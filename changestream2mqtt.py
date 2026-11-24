@@ -111,6 +111,8 @@ def handle_slack_change(database, collection, operation, document, now_ms=None):
 
 def process_mongo_update(update_change, database, mqttclient):
     collection = update_change["ns"]["coll"]
+    if collection.startswith("ledger_"):
+        return
     operation = update_change["operationType"]
     has_full_document = "fullDocument" in update_change
     if has_full_document:
@@ -163,6 +165,7 @@ def main():
     client.admin.command("ping")
     database = client.makerauth
     try:
+        # A $match stage with updateLookup can cause resume-token errors.
         with database.watch([], full_document="updateLookup") as change_stream:
             for change in change_stream:
                 process_mongo_update(change, database, mqttclient)
