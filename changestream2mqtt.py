@@ -111,6 +111,8 @@ def handle_slack_change(database, collection, operation, document, now_ms=None):
 
 def process_mongo_update(update_change, database, mqttclient):
     collection = update_change["ns"]["coll"]
+    # The Ledger owns private conversation, consent, and outbox records. Never
+    # forward or log their contents through the database-wide legacy bridge.
     if collection.startswith("ledger_"):
         return
     operation = update_change["operationType"]
@@ -143,6 +145,9 @@ def process_mongo_update(update_change, database, mqttclient):
 
 
 def publish_to_mqtt(mqttclient, collection, operation, document):
+    # Defense at the publishing boundary also protects direct callers.
+    if collection.startswith("ledger_"):
+        return
     topic = f"{collection}/{operation}"
     result = mqttclient.publish(
         topic, f'{operation} {int(time.time())} {{"document": {document} }}', 2

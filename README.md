@@ -1,6 +1,13 @@
 # ChangeStream2MQTT
 Ingests MongoDB Atlas Changestream and replicates changes to MQTT
 
+The bridge skips events from collections whose names start with `ledger_`
+before forwarding, logging payloads, or sending Slack notifications. Direct
+calls to the MQTT publisher also skip these collections. The Ledger publishes
+its own minimal advancement events. The prefix check keeps private consent
+records, recognition messages, prompts, and game records out of the bridge's
+output.
+
 ## Docker configuration
 
 Create `changestream2mqtt.env` with the connection settings for your

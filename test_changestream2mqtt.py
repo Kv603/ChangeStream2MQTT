@@ -14,6 +14,24 @@ from collection_handlers.common import (SLACK_USER_CACHE_FILENAME,
                                         slack_user_for_card)
 
 
+class LedgerExclusionTests(unittest.TestCase):
+    def test_private_collections_never_reach_forwarding_or_notifications(self):
+        for collection in ("ledger_context", "ledger_evidence", "ledger_outbox", "ledger_future_collection"):
+            with self.subTest(collection=collection), patch.object(app, "publish_to_mqtt") as publish, patch.object(app, "handle_slack_change") as notify:
+                app.process_mongo_update({"ns": {"coll": collection}, "operationType": "insert",
+                    "fullDocument": {"private_message": "must not leave Mongo"}}, MagicMock(), MagicMock())
+                publish.assert_not_called()
+                notify.assert_not_called()
+
+    def test_direct_publisher_does_not_log_or_publish_private_data(self):
+        client = MagicMock()
+        with patch.object(app, "logger") as logger:
+            app.publish_to_mqtt(client, "ledger_context", "insert", "private conversation")
+        client.publish.assert_not_called()
+        logger.info.assert_not_called()
+        logger.warning.assert_not_called()
+
+
 def dependencies(now_ms=1_800_000_000_000):
     """Return synchronous test doubles for handler transports."""
     push = AsyncMock(return_value=True)
@@ -324,12 +342,30 @@ class DispatcherTests(unittest.TestCase):
         self.assertEqual(handler.call_args.args[2], {"_id": "gone"})
         self.mqtt.publish.assert_called_once()
 
-    def test_ledger_collection_is_skipped(self):
-        with patch.object(app, "handle_slack_change") as slack:
-            app.process_mongo_update(self.change("ledger_entries"),
-                                     self.database, self.mqtt)
+    def test_main_skips_ledger_events_with_unfiltered_update_lookup(self):
+        normal_change = self.change("widgets", operation="update")
+        normal_change["fullDocument"] = None
+        watch = self.database.watch
+        watch.return_value.__enter__.return_value = [
+            self.change("ledger_entries"),
+            normal_change,
+        ]
+        settings = {"MQTT_HOST": "broker", "CHANGE_STREAM_DB": "mongodb://database"}
+        with (
+            patch.dict(os.environ, settings, clear=True),
+            patch.object(app, "configure_logging"),
+            patch.object(app.mqtt, "Client", return_value=self.mqtt),
+            patch.object(app.pymongo, "MongoClient") as mongo_client,
+            patch.object(app, "handle_slack_change") as slack,
+        ):
+            mongo_client.return_value.makerauth = self.database
+            app.main()
 
-        self.mqtt.publish.assert_not_called()
+        watch.assert_called_once_with([], full_document="updateLookup")
+        self.mqtt.publish.assert_called_once()
+        topic, payload, _qos = self.mqtt.publish.call_args.args
+        self.assertEqual(topic, "widgets/update")
+        self.assertIn('"document": null', payload)
         slack.assert_not_called()
 
 
