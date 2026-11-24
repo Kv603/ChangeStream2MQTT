@@ -1,6 +1,12 @@
 # ChangeStream2MQTT
 Ingests MongoDB Atlas Changestream and replicates changes to MQTT
 
+Collections whose names start with `ledger_` are excluded from the change
+stream, forwarding, and payload logging. The Ledger publishes its own minimal
+advancement events. This exclusion also applies to direct publisher calls;
+private consent, recognition messages, prompts, and game records must never be
+republished by this database-wide bridge.
+
 Selected `checkins`, `rejections`, and active `members` changes can also be sent
 to Slack through an incoming webhook. Set both required variables:
 

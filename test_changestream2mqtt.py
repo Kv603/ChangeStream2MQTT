@@ -14,6 +14,24 @@ from collection_handlers.common import (SLACK_USER_CACHE_FILENAME,
                                         slack_user_for_card)
 
 
+class LedgerExclusionTests(unittest.TestCase):
+    def test_private_collections_never_reach_forwarding_or_notifications(self):
+        for collection in ("ledger_context", "ledger_evidence", "ledger_outbox", "ledger_future_collection"):
+            with self.subTest(collection=collection), patch.object(app, "publish_to_mqtt") as publish, patch.object(app, "handle_slack_change") as notify:
+                app.process_mongo_update({"ns": {"coll": collection}, "operationType": "insert",
+                    "fullDocument": {"private_message": "must not leave Mongo"}}, MagicMock(), MagicMock())
+                publish.assert_not_called()
+                notify.assert_not_called()
+
+    def test_direct_publisher_does_not_log_or_publish_private_data(self):
+        client = MagicMock()
+        with patch.object(app, "logger") as logger:
+            app.publish_to_mqtt(client, "ledger_context", "insert", "private conversation")
+        client.publish.assert_not_called()
+        logger.info.assert_not_called()
+        logger.warning.assert_not_called()
+
+
 def dependencies(now_ms=1_800_000_000_000):
     """Return synchronous test doubles for handler transports."""
     push = AsyncMock(return_value=True)
